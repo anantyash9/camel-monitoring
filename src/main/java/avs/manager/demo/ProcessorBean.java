@@ -1,5 +1,10 @@
 package avs.manager.demo;
 
+import java.io.BufferedWriter;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
@@ -13,17 +18,16 @@ import org.springframework.stereotype.Component;
 
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVPrinter;
 
 @Component("ProcessorBean")
 public class ProcessorBean {
 	private Timestamp timestamp;
 	private final static Logger LOGGER = Logger.getLogger(Logger.GLOBAL_LOGGER_NAME);
 	private int seq;
-	private int freq=100;
-	private int current=0;
-//	private int oracleArray[]=new int[freq];
-//	private int bigtableArray[]=new int[freq];
-//	private int endToEndArray[]=new int[freq];
+	private int freq=1000;
+	private boolean isMetricsInitialized =false;
 	private HashMap<String, HashMap<String, Object>> carrierInfo = new HashMap<String, HashMap<String, Object>>();
 	
 	public String hashIt(String body) {
@@ -61,11 +65,6 @@ public class ProcessorBean {
 				+ "avsPublisherPublishedTimeStampMillis:1617258315834\n";
 	}
 
-	public String addTimestamp(String body) {
-		Date date = new Date();
-		return body + "\noutboundTimestampMillis:" + date.getTime();
-	}
-
 	public String getCarrier(String body) {
 		String lines[] = body.split("\\r?\\n");
 		return lines[3].substring(0, 2);
@@ -83,9 +82,10 @@ public class ProcessorBean {
 		Date date = new Date();
 		body=body+"\navsMonitoringSubTimeStampMillis:"+date.getTime();
 		Timestamp nanoTimestamp = (com.google.protobuf.Timestamp) exchange.getMessage().getHeaders().get("CamelGooglePubsub.PublishTime"); 
-		return body+"\navsPublisherPublishedTimeStampMillis:"+Timestamps.toMillis(nanoTimestamp);;
+		return body+"\navsPublisherPublishedTimeStampMillis:"+Timestamps.toMillis(nanoTimestamp);
 	}
-	public void logMetrics(String body) {
+	
+	public void logMetrics(String body,Exchange exchange) throws IOException {
 		
 		String carrier = getCarrier(body);
 		
@@ -101,6 +101,8 @@ public class ProcessorBean {
 		HashMap<String, Object> info = new HashMap<String, Object>();
 		if (!(carrierInfo.containsKey(carrier))) {
 			info.put("count",0);
+			info.put("lastMessageTime", avsPublisherPublishedTimeStampMillis);
+			info.put("OutOfOrder", 0);
 			info.put("PublisherQueue",new int[freq]);
 			info.put("oracleArray",new int[freq]);
 			info.put("bigtableArray",new int[freq]);
@@ -114,6 +116,17 @@ public class ProcessorBean {
 			info =carrierInfo.get(carrier);
 		}
 		int count=(int) info.get("count");
+		long lastMessageTime = (long) info.get("lastMessageTime");
+		int OutOfOrder = (int) info.get("OutOfOrder");
+		if (lastMessageTime>avsPublisherPublishedTimeStampMillis) {
+			OutOfOrder++;
+		}
+		else 
+		{
+			lastMessageTime=avsPublisherPublishedTimeStampMillis;
+		}
+		info.put("lastMessageTime",lastMessageTime);
+		info.put("OutOfOrder", OutOfOrder);
 		
 		int[] PublisherQueue = (int[]) info.get("PublisherQueue");
 		PublisherQueue[count]=(int) (consumedTimestampMillis-publishedTimestampMillis);
@@ -135,7 +148,7 @@ public class ProcessorBean {
 			
 			
 			int[] AvsManagerProcessingTime = (int[]) info.get("AvsManagerProcessingTime");
-			AvsManagerProcessingTime[count]=(int) (avsSubscriberpublishedTimeStampMillis-consumedTimestampMillis);
+			AvsManagerProcessingTime[count]=(int) (bigTableInsertedTimestampMillis-consumedTimestampMillis);
 			info.put("AvsManagerProcessingTime",AvsManagerProcessingTime);
 			
 			int[] AvsPublisherProcessingTime = (int[]) info.get("AvsPublisherProcessingTime");
@@ -147,29 +160,47 @@ public class ProcessorBean {
 			info.put("CustomerQueue",CustomerQueue);
 			
 			int[] PublisherToCustomer = (int[]) info.get("PublisherToCustomer");
-			PublisherToCustomer[count]=(int) (avsPublisherPublishedTimeStampMillis-publishedTimestampMillis);
+			PublisherToCustomer[count]=(int) (avsPublisherConsumedTimeStampMillis-consumedTimestampMillis);
 			info.put("PublisherToCustomer",PublisherToCustomer);
 			count++;
 			info.put("count", count);
 			carrierInfo.put(carrier, info);
 			
 		if (count==freq) {
+			exportDataToCsv(info,carrier);
 			info.put("count",0);
 			carrierInfo.put(carrier, info);
-			LOGGER.log(Level.INFO, "Average latency is milliseconds over "+freq+" messages for "+carrier+" is : \n" +"AVS Manager Inbound Topic: "+
-			Arrays.stream(PublisherQueue).average().orElse(-1)+"\nOracle Persistance time: "+
+			LOGGER.log(Level.INFO, "\nAverage latency is milliseconds over "+freq+" messages for "+carrier+" is : \n" +"\nOracle Persistance time: "+
 			Arrays.stream(oracleArray).average().orElse(-1)+"\nBigTable Persistance time: "+
-			Arrays.stream(bigtableArray).average().orElse(-1)+"\nAVS Manager Outbound Topic Idle time: "+
-			Arrays.stream(OutboundQueue).average().orElse(-1)+"\nAvsManager Processing Time(from subscriber start time to outbound publish time): "+
-			Arrays.stream(AvsManagerProcessingTime).average().orElse(-1)+"\nAvsPublisher Processing Time (from customer start time to customer publish time): "+
-			Arrays.stream(AvsPublisherProcessingTime).average().orElse(-1)+"\nCustomer Topic idle time : "+
-			Arrays.stream(CustomerQueue).average().orElse(-1)+"\nPublisher To Customer end to end: "+
-			Arrays.stream(PublisherToCustomer).average().orElse(-1)+"\nTotal Idle Time: "+
-			(Arrays.stream(CustomerQueue).average().orElse(-1)+Arrays.stream(PublisherQueue).average().orElse(-1)+Arrays.stream(OutboundQueue).average().orElse(-1))
-					);
+			Arrays.stream(bigtableArray).average().orElse(-1)+"\nAvsManager Processing Time: "+
+			Arrays.stream(AvsManagerProcessingTime).average().orElse(-1)+"\nPublisher To Customer end to end (Includes idle time): "+
+			Arrays.stream(PublisherToCustomer).average().orElse(-1)+"\n Total out of order messages: "+
+			OutOfOrder);
 			
 			
 		}
+	}
+	
+	public void exportDataToCsv(HashMap info ,String carrier) throws IOException {
+		BufferedWriter writer = Files.newBufferedWriter(Paths.get("./metrics.csv"),StandardOpenOption.APPEND,StandardOpenOption.CREATE);
+		CSVPrinter csvPrinter;
+		if(isMetricsInitialized) {
+			csvPrinter = new CSVPrinter(writer,CSVFormat.DEFAULT);
+		}
+		else {
+		csvPrinter = new CSVPrinter(writer, CSVFormat.DEFAULT.withHeader("Sample Size","Carrier","Oracle Persistance time","BigTable Persistance time", "AvsManager Processing Time","Publisher To Customer end to end (Includes idle time)","Out of order messages"));
+		isMetricsInitialized=true;
+		}
+		csvPrinter.printRecord(Arrays.asList(info.get("count"),
+					carrier,
+					Arrays.stream((int[]) info.get("oracleArray")).average().orElse(-1),
+					Arrays.stream((int[]) info.get("bigtableArray")).average().orElse(-1),
+					Arrays.stream((int[]) info.get("AvsManagerProcessingTime")).average().orElse(-1),
+					Arrays.stream((int[]) info.get("PublisherToCustomer")).average().orElse(-1),
+					(int) info.get("OutOfOrder")
+					));
+		csvPrinter.flush();
+		
 	}
 
 }

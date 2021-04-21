@@ -16,9 +16,8 @@
  */
 package avs.manager.demo;
 
-import org.apache.camel.LoggingLevel;
+
 import org.apache.camel.builder.RouteBuilder;
-import org.apache.camel.component.google.pubsub.GooglePubsubConstants;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -37,12 +36,12 @@ public class CustomerRoute extends RouteBuilder {
 
     @Override
     public void configure() throws Exception {
-        // start from a timer
+    	// uncomment for offline testing
+//    	from("timer:hello?delay=-1").routeId("subscriber")
+    	
+    	//rout to customer pubsub subscription
         from("{{google.pubsub.customer.subscription}}").routeId("subscriber")
-                // and call the bean
-//        .to("micrometer:timer:simple.timer?action=start")
-//        .transform(body().append(simple("${in.header.GooglePubsubConstants.MESSAGE_ID}")))
-//        .log(LoggingLevel.INFO, "${in.headers.CamelGooglePubsub.PublishTime}")
+                // uncomment for offline testing
 //        .bean(processorBean,"addBody")
         .bean(processorBean,"addTimestamp")
         .bean(processorBean,"logMetrics")
