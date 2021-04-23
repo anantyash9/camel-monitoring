@@ -1,4 +1,4 @@
-package avs.manager.demo;
+package com.sabre.avs;
 
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -30,12 +30,13 @@ public class ProcessorBean {
 	private boolean isMetricsInitialized =false;
 	private HashMap<String, HashMap<String, Object>> carrierInfo = new HashMap<String, HashMap<String, Object>>();
 	
-	public String hashIt(String body) {
-//    	System.out.println(body.hashCode()%3);
+	//Hash function 
+	private String hashIt(String body) {
 		return String.valueOf(Math.abs(body.hashCode() % 3));
 	}
-
-	public void checkSequence(Exchange exchange) {
+	
+	//checks the sequence of pubsub messages based on publish time 
+	private void checkSequence(Exchange exchange) {
 		Timestamp temp = (Timestamp) exchange.getIn().getHeader("CamelGooglePubsub.PublishTime");
 		if (this.timestamp == null) {
 			this.timestamp = temp;
@@ -49,7 +50,8 @@ public class ProcessorBean {
 		}
 
 	}
-
+	//this method is used for offline testing.
+	// generates a dummy message body
 	public String addBody(String body) {
 		return "KFGS7334\n"
 				+ "DLZDDA87\n"
@@ -64,12 +66,14 @@ public class ProcessorBean {
 				+ "avsMonitoringSubTimeStampMillis:1617258315842\n"
 				+ "avsPublisherPublishedTimeStampMillis:1617258315834\n";
 	}
-
-	public String getCarrier(String body) {
+	//extracts carrier code from body 
+	private String getCarrier(String body) {
 		String lines[] = body.split("\\r?\\n");
 		return lines[3].substring(0, 2);
 	}
-	public long getMillis(String body,String metric) {
+	
+	// A utility function for extracting timestamps from message body
+	private long getMillis(String body,String metric) {
 		Pattern p = Pattern.compile("(?<="+metric+":)(.*)(?=\n)");
 		Matcher m = p.matcher(body);
 		if (m.find()) {
@@ -78,6 +82,7 @@ public class ProcessorBean {
 		return -1;
 		
 	}
+	//Adds timestamps to message body
 	public String addTimestamp(String body,Exchange exchange) {
 		Date date = new Date();
 		body=body+"\navsMonitoringSubTimeStampMillis:"+date.getTime();
@@ -85,6 +90,7 @@ public class ProcessorBean {
 		return body+"\navsPublisherPublishedTimeStampMillis:"+Timestamps.toMillis(nanoTimestamp);
 	}
 	
+	//calculates metrics based on timestamps and logs them based on required frequency
 	public void logMetrics(String body,Exchange exchange) throws IOException {
 		
 		String carrier = getCarrier(body);
@@ -176,12 +182,11 @@ public class ProcessorBean {
 			Arrays.stream(AvsManagerProcessingTime).average().orElse(-1)+"\nPublisher To Customer end to end (Includes idle time): "+
 			Arrays.stream(PublisherToCustomer).average().orElse(-1)+"\n Total out of order messages: "+
 			OutOfOrder);
-			
-			
 		}
 	}
 	
-	public void exportDataToCsv(HashMap info ,String carrier) throws IOException {
+	//utility method for writing calculated metrics to csv file
+	private void exportDataToCsv(HashMap info ,String carrier) throws IOException {
 		BufferedWriter writer = Files.newBufferedWriter(Paths.get("./metrics.csv"),StandardOpenOption.APPEND,StandardOpenOption.CREATE);
 		CSVPrinter csvPrinter;
 		if(isMetricsInitialized) {
@@ -200,7 +205,6 @@ public class ProcessorBean {
 					(int) info.get("OutOfOrder")
 					));
 		csvPrinter.flush();
-		
 	}
 
 }
